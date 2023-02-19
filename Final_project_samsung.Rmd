@@ -1,0 +1,628 @@
+---
+title: "Statistical Learning (Mod. B)"
+author: "Wu Xianlong MAT: 2038500"
+font: 12pt
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+---
+
+
+---
+# Load the packages 
+---
+```{r}
+library(dplyr)
+library(corrplot) # get the correlation plots
+library(glmnet) 
+library(caret)
+library(ggplot2)
+library(gridExtra)
+library(mltools)
+library(data.table)
+library(nnet)
+library(crosstable)
+library(DMwR2)
+library(MASS)
+library(lattice)
+```
+
+
+# Data description and objective introduction
+
+The dataset that is used in this project comes from the UCI dataset which performs human activity recognition with the data collected from a smart phone(<https://archive.ics.uci.edu/ml/datasets/Human+Activity+Recognition+Using+Smartphones>). The data is collected from an experiment with 30 volunteers within an age bracket of 19-48 years.  Each of them wears a smartphone and with the accelerometer and gyroscope embedded in the device, the 3-axial linear acceleration and 3-axial angular velocity were sampled with a frequency of 50Hz. Each of the volunteers have only 6 states(activities), which are: 'WALKING', 'WALKING_UPSTAIRS', 'WALKING_DOWNSTAIRS', 'SITTING', 'STANDING', 'LAYING.' The data has been pre-processed and separated as 70 percent of them are selected as training data and the rest 30 percent are the test data. \\
+
+As for the objective of this report, we would like to investigate the dataset from three perspectives: The first one is to find a low dimensional representation or transformation of the dataset so that the maximum amount of useful information can be kept and the second one is to find a good statistical model that can perform the classification task correctly and the third one is to further apply different regularization techniques such that the generalization ability of the model is guaranteed. Furthermore, some the techniques applied can be also considered as a way of performing feature selection such that the most relevant predictors can be found.  \\
+
+
+# Data inspection and preprocessing
+
+Now, we first load the dataset and make the primary inspection of the dataset.
+
+```{r}
+X_train_ori <- read.table('X_train.txt')
+X_test_ori <- read.table('X_test.txt')
+y_train <- read.table('y_train.txt') 
+y_test <- read.table('y_test.txt')
+```
+
+We first check the input training and test set, by checking the dimension and NA values \\
+
+
+```{r}
+cat('Dimension of the training set is: \n' , dim(X_train_ori))
+cat('\n')
+cat('Dimension of the test set is: \n' , dim(X_test_ori))
+cat('\n')
+cat('Number of NA in the training set is: \n', sum(colSums(is.na(X_train_ori))))
+cat('\n')
+cat('Number of NA in the test set is: \n', sum(colSums(is.na(X_test_ori))))
+```
+S
+We can see that there is not NA values in both the training and test set. Let's plot the bar plot to show the classes in a better manner.  \\
+
+```{r}
+colnames(y_train) <- c('Activity')     # Change the names of the response
+colnames(y_test) <- c('Activity')
+cat('The column name of the training response is: \n')
+colnames(y_train)
+cat('\n\n')
+cat('The column name of the test response is: \n')
+colnames((y_test))
+```
+
+```{r}
+p1 <- ggplot(y_train, aes(x=Activity )) +
+  geom_bar(color="blue", fill=rgb(0.1,0.4,0.5,0.7))
+
+p2 <- ggplot(y_test, aes(x=Activity )) +
+  geom_bar(color="blue", fill=rgb(0.1,0.4,0.5,0.7))
+
+grid.arrange(p1 + labs(title = "Training set"), p2 + labs(title = "Test set"), ncol = 2)
+```
+From the bar plots above, we can see that for both training and test set, we have 6 different classes which are labelled as integer number from 1 to 6 which correspond to the 6 possible activities of the monitored individual. Furthermore, we can see that the classes labelled as '2' and '3' are slightly less frequent compared to other classes, thus we will use the 'oversampling' technique to generate more data so that in the end all the classes are balanced.  We can use the 'upSample' function, but before applying the function, we should merge the the dataset with the corresponding response.  \\
+
+```{r}
+X_train_ori <- cbind(X_train_ori, y_train)
+X_test_ori <- cbind(X_test_ori, y_test)
+X_train_ori[1:5, ncol(X_train_ori)]
+X_test_ori[1:5, ncol(X_test_ori)]
+```
+From the code output above, we can see that for both training and dataset the last column is the response. Now, we can perform the oversampling.  \\
+
+
+```{r}
+set.seed(234)
+X_train_ori <- upSample(x = X_train_ori[, -ncol(X_train_ori)],
+                     y = as.factor(X_train_ori$Activity))
+
+X_test_ori <- upSample(x = X_test_ori[, -ncol(X_train_ori)],
+                     y = as.factor(X_test_ori$Activity))
+```
+
+Before accessing the result of the oversampling, let's extract the response and change the feature names for the sake of consistency.  \\
+
+```{r}
+colnames(X_train_ori)[ncol(X_train_ori)] <- "Activity"
+colnames(X_test_ori)[ncol(X_test_ori)] <- "Activity"
+
+y_train <- data.frame(X_train_ori$Activity) 
+y_test <- data.frame(X_test_ori$Activity)
+
+colnames(y_train)[ncol(y_train)] <- "Activity"
+colnames(y_test)[ncol(y_test)] <- "Activity"
+```
+
+
+
+```{r}
+p1_upSampled <- ggplot(y_train, aes(x=Activity )) +
+  geom_bar(color="blue", fill=rgb(0.1,0.4,0.5,0.7))
+
+p2_upSampled <- ggplot(y_test, aes(x=Activity )) +
+  geom_bar(color="blue", fill=rgb(0.1,0.4,0.5,0.7))
+
+grid.arrange(p1_upSampled + labs(title = "Training set"), p2_upSampled + labs(title = "Test set"), ncol = 2)
+```
+
+We see that all the classes are now uniformly distributed.  Now, as for the labels, they are just integer numbers that represent the human activities which are not ordinal, in order to get a better visualization, we insert the correct labels first. \\
+
+
+```{r}
+# Define a dictionary of old and new values
+replace_dict <- c("1" = "WALKING", "2" = "WALKING_UPSTAIRS", "3" = "WALKING_DOWNSTAIRS", "4" = "SITTING", "5" = "STANDING", "6" = "LAYING")
+
+# Replace values in the response
+y_train$Activity <- ifelse(y_train$Activity %in% names(replace_dict), replace_dict[y_train$Activity], y_train$Activity)
+y_test$Activity <- ifelse(y_test$Activity %in% names(replace_dict), replace_dict[y_test$Activity], y_test$Activity)
+
+X_train_ori$Activity <- ifelse(X_train_ori$Activity %in% names(replace_dict), replace_dict[X_train_ori$Activity], X_train_ori$Activity)
+X_test_ori$Activity <- ifelse(X_test_ori$Activity %in% names(replace_dict), replace_dict[X_test_ori$Activity], X_test_ori$Activity)
+
+
+cat('The new labels are: \n', unique(X_train_ori$Activity))
+
+```
+
+
+
+The next task we should perform is get the correlations between the features: \\
+
+```{r}
+X_train_unlabelled <- X_train_ori[, -ncol(X_train_ori)]
+X_test_unlabelled <- X_test_ori[, -ncol(X_test_ori)]
+```
+
+
+```{r}
+cor_mat = cor(X_train_unlabelled)
+corrplot(cor_mat, method = 'square', order = 'FPC', type = 'lower', diag = FALSE)
+```
+
+From the plot, we can see that there is almost no correlations between different features, however, since there is 561 features in our dataset thus in order to confirm the observation, we now select the sub-matrix that contains the entries that are greater than 0.95 in absolute values. \\
+
+```{r}
+abs_cor_mat <- abs(cor_mat)    # get the matrix in absolute values
+masked <- abs_cor_mat[which(abs_cor_mat > 0.95)] %>% as.array()   # get the part that larger than 0.95
+ordered <- sort(unique(masked), decreasing = TRUE)
+cat('The first 10 largest unique entries of the correlation matrix in absolute values are: \n', ordered[1:10])
+cat('\n\n')
+cat('The size of the array is : \n', dim(ordered))
+```
+From the codes above we can see that it is NOT true that there is almost no correlations between the features, in fact, the size of the array is 1749, hence the plot above has this specific pattern simply because the size of the matrix is too much and we do not have enough margin to make them visible. Indeed, from the top 10 largest entries in absolute values, we see all of them show perfect/almost perfect correlations. One thing should we should keep in mind is that notice the largest absolute value of the correlation coefficients is 1 which might have two possible sources, the first source is simply the entries on the diagonal of the correlation matrix as all of them indicate the self-correlations of each individual feature which is for sure equals to 1 and thus guaranteed to be present in the top 10 largest coefficients, the second possible source is the features that have perfect positive/negative correlations which is not visible to us since only the unique values are considered, thus in our dataset there is a possibility that there is perfect correlations between different features but they are just 'covered' by the self-correlations of each individual feature. \\
+
+Another observation is that, besides the entry equals to 1 that is discussed above, we can see that the second and third largest entries are also equal to 1, considering only the unique values are considered, thus this happened due to the precision of R, indeed, we can easily verify it with the following code which gives us the 'FALSE' as output. \\
+
+```{r}
+ordered[2] == ordered[3]
+```
+# Representations of the dataset
+Within this section, we would like to transform the dataset into a lower dimensional representation as by doing we can save both the memory and the computation time without losing too much information of the data. Furthermore, since co-linearity exits in the dataset, thus approach such as Linear Discriminant Analysis (LDA) require a preprocessing of the dataset. \\
+
+In this report, two approaches of transformation or modification of the dataset is used. The first one is the most intuitive which is removing the highly correlated features as they do not provide useful information and the second approach is the Principle Component Analysis which projects the dataset onto a lower dimensional space and tries to maintain the maximum information.  \\
+
+## Removal of highly correlated features
+As mentioned before, the size of the array of the unique entries with a correlation coefficient larger than 0.95 in absolute value is 1749, thus, we will remove the features that are highly correlated as co-linearity does not provide us more or only provides limited information. \\
+
+```{r}
+col_rm <- findCorrelation(cor_mat, cutoff=0.8)   # Get the mask:  columns to remove 
+col_name <- colnames(X_train_unlabelled)                    # Get all the features
+X_train <- X_train_unlabelled[-col_rm]             # Apply the mask
+X_test <- X_test_unlabelled[-col_rm]
+cor_mat_selected <- cor(X_train)        # Get the new correlation matrix
+cat('The number of features left after removal of highly correlated features is: \n' , dim(cor_mat_selected)[1])
+```
+From the output above, we can see that only 173 features are below the threshold and we can plot again the correlation plot. \\
+
+```{r}
+corrplot(cor_mat_selected, method = 'square', order = 'FPC', type = 'lower', diag = FALSE) 
+```
+
+From the new plot, we can see that the pattern of the correlation between different features can be seen now, which provides another evidence to the speculation made before. \\
+
+Since some of our model has the assumption of normal distributed and some techniques such as PCA that is sensitive to the variance of the variables, the dataset will be standardized first.  \\
+
+## Principle Component Analysis (PCA)
+With the method above, we removed the variables that are highly correlated, however, we could also apply the Principle Component Analysis (PCA). PCA is a really useful dimension reduction technique in statistics as it finds the directions (the principle components) so that by projecting the data onto the principle components, the maximum variance can be preserved or in another word, the maximum amount information can be preserved. As it searches for the maximum variance, thus it can be sensitive to the variance, thus we will standardize the data.   \\
+
+```{r}
+X_train_std <- scale(X_train_ori[, -ncol(X_train_ori)])
+X_test_std <- scale(X_test_ori[, -ncol(X_test_ori)])
+```
+
+```{r}
+set.seed(123)
+pca_train <- prcomp(X_train_std, center = TRUE, scale. = TRUE)
+cumsum(pca_train$sdev^2 / sum(pca_train$sdev^2))
+```
+
+
+
+From the result above, we can see that with the first 180 principle components, around 99 percent of the variance can be preserved and we can see it better with the following plot.  \\
+
+```{r}
+plot(cumsum(pca_train$sdev^2/sum(pca_train$sdev^2)), xlab = "Principal component", ylab = "Cumulative proportion of variance")
+```
+
+Furthermore, we can use the biplot to get an intuition how PCA projects the dataset onto the first two principle components.  \\
+
+```{r}
+biplot(pca_train, scale = 0)
+```
+
+Now, we project our dataset onto the first 180 principle components. 
+
+```{r}
+X_train_pca <- as.data.frame(predict(pca_train, newdata = X_train_std)[, 1:180])
+X_test_pca <- as.data.frame(predict(pca_train, newdata = X_test_std)[, 1:180])
+```
+
+
+Now, we can put the assign again the labels of the data. 
+
+```{r}
+X_train <- cbind(X_train, y_train)
+X_test <- cbind(X_test, y_test)
+X_train_pca <- cbind(X_train_pca, y_train)
+X_test_pca <- cbind(X_test_pca, y_test) 
+X_train[1:5, ncol(X_train)]
+X_test[1:5, ncol(X_test)]
+X_train_pca[1:5, ncol(X_train_pca)]
+X_test_pca[1:5, ncol(X_test_pca)]
+```
+
+
+
+# Multiclass classification
+
+With the removal of highly correlated features and PCA, we obtain two different dataset, and now let's compare which of the preprocessing technique can perform with different models.  Since we are facing a multi-class classification problem, thus models such as the multinomial Logistic Regression, LDA are used.  As for the evaluation of the model performance, the mean error and the confusion matrix are used as they are easy to implement and also powerful for the assessment of the classification task.  \\
+
+## K-Nearest Neighbor (KNN)
+
+The KNN model is a model that clusters the dataset by considering the labels of its K closest neighbors. However, the number of neighbors to be considered is a hyper-parameter and thus we will run a for loop between 1 and 20 to get the best number of neighbors to be considered.   \\ 
+
+First, we use the dataset that removed the highly correlated features. 
+
+```{r}
+set.seed(123)
+accuracy_KNN <- c()              # accuracy vector
+k_closest<- c()                  # number of nearest neighbors
+for(k in seq(1,20)) {
+pred_KNN <- kNN(Activity ~ .,train = X_train, test = X_test,  k = k)
+accuracy_KNN <- append(accuracy_KNN, mean(as.matrix(pred_KNN) == y_test))
+k_closest <- append(k_closest, k)
+}
+plot(k_closest, accuracy_KNN, type = "p", col="blue", xlab="Number of neighbors", ylab="Accuracy", main='Accuracy vs Number of neighbors')
+abline(h = max(accuracy_KNN), v = which.max(accuracy_KNN), col = "darkorange", lty = 5)
+```
+
+```{r}
+cat('The optimal number of neighbors to be considered is: ', which.max(accuracy_KNN))
+cat('\n\n')
+cat('The best accuracy of KNN is: ', max(accuracy_KNN))
+```
+
+We can see that for our dataset, the number of neighbors to be considered is 13, and with 13 nearest neighbors, the KNN model reaches an accuracy of 0.86. In order to check the specific mistakes that is made by the model, we can create a 6X6 confusion matrix which can be achieved with the 'table' function in R.  \\
+
+
+```{r}
+set.seed(123)
+pred_KNN_best <- kNN(Activity ~ .,train = X_train, test = X_test,  k = which.max(accuracy_KNN))  # fit again with the optimal number of neighbors
+table(X_test$Activity, pred_KNN_best)
+```
+
+From the confusion matrix we can see that the model can separate really well the WALKING and NON-WALKING(LAYING, SITTING, STANDING) activities as most of the entries for the upper triangular and lower triangular parts of the confusion matrix are 0.  If we check further the sub-blocks of the WALKING and NON-WALKING activities, we can see that sometimes the model incorrectly labels 'SITTING' as 'STANDING'. As for the NON-WALKING sub-block, the model can label pure 'WALKING' activity almost perfectly, but sometimes it has difficulty identifying walking on the stairs especially 'WALKING_DOWNSTAIRS' as around 20 percent of the time it is labelled as other type of walking activities.   \\  
+
+Let's see the dataset selected according to PCA.  \\
+
+```{r}
+set.seed(123)
+accuracy_KNN_pca <- c()              # accuracy vector
+k_closest_pca<- c()                  # number of nearest neighbors
+for(k in seq(1,20)) {
+pred_KNN_pca <- kNN(Activity ~ .,train = X_train_pca, test = X_test_pca,  k = k)
+accuracy_KNN_pca <- append(accuracy_KNN_pca, mean(as.matrix(pred_KNN_pca) == y_test))
+k_closest_pca <- append(k_closest_pca, k)
+}
+plot(k_closest, accuracy_KNN_pca, type = "p", col="blue", xlab="Number of neighbors", ylab="Accuracy", main='Accuracy vs Number of neighbors (PCA)')
+abline(h = max(accuracy_KNN_pca), v = which.max(accuracy_KNN_pca), col = "darkorange", lty = 5)
+```
+
+
+
+```{r}
+cat('The optimal number of neighbors to be considered for PCA dataset is: ', which.max(accuracy_KNN_pca))
+cat('\n\n')
+cat('The best accuracy of KNN for PCA dataset is: ', max(accuracy_KNN_pca))
+```
+
+
+```{r}
+set.seed(123)
+pred_KNN_best_pca <- kNN(Activity ~ .,train = X_train_pca, test = X_test_pca,  k = which.max(accuracy_KNN_pca))  # fit again with the optimal number of neighbors
+table(X_test_pca$Activity, pred_KNN_best_pca)
+```
+
+The optimal number of neighbors for the PCA dataset is 5, however, the result we obtained shows that KNN performs poorly on the dataset selected with PCA and the separability of WALKING and NON-WALKING blocks is not present. 
+
+
+## Multinomial Logistic Regression
+
+As mentioned before, the labels are non ordinal, thus we chose the multinomial logistic regression as it is a good option for this type of problem. Now we can fit the multinomial logistic regression model. 
+
+
+```{r}
+set.seed(123)
+fit_mul_log <- multinom(Activity ~ ., data = X_train, MaxNWts=10000, maxit=1000)  # fit the model
+pred_mul_log <- predict(fit_mul_log, X_test[,-ncol(X_test)], type="class")       # prediction
+accuray_mul_log <- mean(as.matrix(pred_mul_log) == y_test)                       # get the accuracy score
+cat('\n')
+cat('The accuracy of the multinomial logistic regression is: \n', accuray_mul_log)
+```
+
+
+From the output we can see that the algorithm reaches the preset maximum iterations, but if we check the loss value, the drop is quite small and hence even if we allow more iterations, the improvement will be not large. Even without arriving at the optimum value, the model still manages to fit the data extremely well as it gets an accuracy of more than 0.90. Let's check the confusion matrix for a better understanding of the errors. \\
+
+```{r}
+table(X_test$Activity, pred_mul_log)
+```
+
+
+We can see that all the activities can be labelled correctly.  Especially the 'LAYING' activity which can be labelled almost perfectly.  Furthermore, unlike the result with KNN, the separability between WALKING and NON-WALKING activities is not as significant but it happens rarely as most of those errors happen to be in the same block.   \\
+
+```{r}
+set.seed(123)
+fit_mul_log_pca <- multinom(Activity ~ ., data = X_train_pca, MaxNWts=10000, maxit=1000)  # fit the model
+pred_mul_log_pca <- predict(fit_mul_log_pca, X_test_pca[,-ncol(X_test_pca)], type="class")       # prediction
+accuray_mul_log_pca <- mean(as.matrix(pred_mul_log_pca) == y_test)                       # get the accuracy score
+cat('\n')
+cat('The accuracy of the multinomial logistic regression of PCA dataset is: \n', accuray_mul_log_pca)
+```
+
+```{r}
+table(X_test_pca$Activity, pred_mul_log_pca)
+```
+
+We can see that the accuracy has improved a lot compared to KNN as an accuracy of 0.77 is achieved, however, it is still much lower compared to the dataset after the removal of highly correlated features. Furthermore, we can also see that the classification of the 'STANDING' activity is really bad as more than 70 percent of the time it is labelled wrongly.  \\
+
+
+
+## Linear Discriminant Analysis (LDA)
+
+The next possible model is the Linear Discriminant Analysis which searches a linear combination of features to perform the task. 
+
+```{r}
+set.seed(123)
+fit_lda <- lda(X_train$Activity ~ ., data = X_train)
+pred_lda <- predict(fit_lda, X_test, type = "class")
+accuray_lda <- mean(as.matrix(pred_lda$class) == y_test)        
+cat('\n')
+cat('The accuracy with LDA is: \n', accuray_lda)
+```
+
+The result is so far the best of all the models, it reaches more than 0.94 of the accuracy. Let's have a look at the confusion matrix and see if there is any difference with previous ones.  \\
+
+
+```{r}
+table(X_test$Activity, pred_lda$class)
+```
+
+We can see that the confusion matrix is similar to the others, the performance of the classification of 'WALKING_DOWNSTAIRS' has improved.   
+
+```{r}
+set.seed(123)
+plot(fit_lda)
+```
+
+```{r}
+set.seed(123)
+fit_lda_pca <- lda(X_train_pca$Activity ~ ., data = X_train_pca)
+pred_lda_pca <- predict(fit_lda_pca, X_test_pca, type = "class")
+accuray_lda_pca <- mean(as.matrix(pred_lda_pca$class) == y_test)        
+cat('\n')
+cat('The accuracy with LDA for PCA dataset is: \n', accuray_lda_pca)
+```
+
+
+```{r}
+table(X_test_pca$Activity, pred_lda_pca$class)
+```
+
+With the PCA dataset, the LDA performs better, and comparing with other models over the PCA dataset, we can see that LDA is way better than other models. Furthermore, the separation between the WALKIND and NON-WALKING blocks can be observed clearly. Comparing with LDA over the other dataset, we can see that the WALKING block can be predicted better as less errors are made over this block.  \\
+
+
+```{r}
+set.seed(123)
+plot(fit_lda_pca)
+```
+
+
+## Quadratic Discriminant Analysis (QDA)
+
+Another technique that is similar to LDA is QDA which stands for Quadratic Linear Discriminant Analysis. Unlike the linear one, QDA searches for the quadratic combinations of the features. 
+
+```{r}
+set.seed(123)
+fit_qda <- qda(X_train$Activity ~ ., data = X_train)
+pred_qda <- predict(fit_qda, X_test, type = "class")
+accuray_qda <- mean(as.matrix(pred_qda$class) == y_test)        
+cat('\n')
+cat('The accuracy with QDA is: \n', accuray_qda)
+```
+
+The result is also really well, however, it is slightly worse than the LDA which might indicate that our dataset is more 'linear' than 'quadratic'.  \\
+
+```{r}
+table(X_test$Activity, pred_qda$class)
+```
+
+The confusion matrix again shows some separability of the different activity blocks, we can see that sometimes the mis-classifications of the NON-WALKING activities are made on the WALKING activities, and all the errors are made within the same activity block.   \\  
+
+
+```{r}
+set.seed(123)
+fit_qda_pca <- qda(X_train_pca$Activity ~ ., data = X_train_pca)
+pred_qda_pca <- predict(fit_qda_pca, X_test_pca, type = "class")
+accuray_qda_pca <- mean(as.matrix(pred_qda_pca$class) == y_test)        
+cat('\n')
+cat('The accuracy with QDA for PCA dataset is: \n', accuray_qda_pca)
+```
+
+```{r}
+table(X_test_pca$Activity, pred_qda_pca$class)
+```
+We can see for QDA, the PCA dataset is also not a good option and again it failed to label the 'SITTING' activity. \\
+
+
+## Summary 
+From the results obtained above, we can conclude that overall the dataset with removal of highly correlated features is a better preprocessing choice as all of our models perform well on that dataset and all of them show the separability between the WALKING and NON-WALKING blocks. However, it is worth stating that there is also some activities that can be more likely to be wrongly predicted as other activities, such as: 'SITTING' are misclassified as 'STANDING' and vice versa, 'WALKING' are misclassified as 'WALKING_DOWNSTAIRS', but this phenomenon is not really problematic as it rarely happens. On the other hand, for the data selected with PCA, overall it performs poorly compared to the other one expect with LDA which actually outperforms the same method with the other dataset. However, other than that, all the models fail to predict well with PCA dataset and actually with the multinomial logistic regression and QDA, both models fail completely to predict 'STANDING' and 'SITTING' activities respectively.  \\
+
+Thus, as a final conclusion of this chapter, it is better to preprocess the dataset by simply removing the highly correlated features it provides a better dataset for the performance of different models. If the correct prediction of the WALKING block activities such as 'WALKING', 'WALKING_DOWNSTAIRS', and 'WALKING_UPSTAIRS', it is advised to preprocess with PCA and use LDA for the prediction as this combination rarely makes mistake on this block. \\
+
+
+
+# Feature selection and Regularization
+
+As discussed above, if we preprocess the dataset by removing highly correlated features, all of our models can perform well, thus we will use this dataset for the subsequent task.  Now, we want to apply some regularization terms so that the model can generalize well, furthermore, depending on the method we use, it is also possible to select the most relevant features for the prediction. The main regularization approaches we want to try are: Ridge, LASSO, and Elastic-net. As all of them requires hyper-parameters thus we will use the cross-validation technique to find them.  \\
+
+## LASSO 
+LASSO is one of the most popular regularization in Machine Learning and Statistics. It used the L1 penalty terms to force the sparsity which can be also considered as a sort of feature selection technique. \\
+
+```{r}
+set.seed(123)
+cv_fit_lasso <- cv.glmnet(data.matrix(X_train[,-ncol(X_train)]), data.matrix(y_train), family= 'multinomial', type.measure = 'class', nfolds = 5)
+plot(cv_fit_lasso)	
+```
+
+
+
+```{r}
+cv_fit_lasso
+```
+
+Here, we can clearly see that the minimum lambda and the lambda with one standard error from the minimum.  With both choice, we can decrease the number of features significantly.  Let's check the coefficients.  \\
+
+
+```{r}
+temp <- coef(cv_fit_lasso, s = cv_fit_lasso$lambda.min)
+beta <- Reduce(cbind, temp)
+beta <- beta[apply(beta != 0, 1, any),]
+colnames(beta) <- names(temp)
+beta
+```
+
+
+```{r}
+set.seed(123)
+
+# Make predictions on the test set 
+pred_lasso = predict(cv_fit_lasso, newx= data.matrix(X_test[,-ncol(X_test)]), type='class')
+
+# Accuracy
+mean(pred_lasso == data.matrix(y_test))
+```
+The accuracy now is almost 0.94 which is higher than that without LASSO.  The features: V38 tBodyAcc-correlation()-X,Y, V294 fBodyAcc-meanFreq()-X appear to be the most relevant features for the classifying all the labels while labels such as V81 tBodyAccJerk-mean()-X, V551 fBodyBodyGyroJerkMag-maxInds, V552 fBodyBodyGyroJerkMag-meanFreq() appear to be less relevant for the prediction.
+
+
+```{r}
+table(data.matrix(y_test),pred_lasso)
+```
+
+
+
+
+## Ridge Regression
+Ridge Regression also penalizes the coefficient with a L2 norm. Unlike LASSO that can force some coefficients to be zero, the Ridge Regression forces the coefficients to be close to zero.
+
+```{r}
+set.seed(123)
+
+cv_fit_ridge <- cv.glmnet(data.matrix(X_train[,-ncol(X_train)]), data.matrix(y_train), family= 'multinomial', type.measure = 'class', nfolds = 5, alpha = 0)
+plot(cv_fit_ridge)
+```
+
+
+
+From the plot, we can see that the minimum is at the edge of the plot, and the trend of decreasing still seems quite strong, thus we will apply a larger search grid than the default one so that the error can decrease further. \\
+
+```{r}
+set.seed(123)
+grid = 10^seq(5,-5,length=200) ##get lambda sequence
+cv_fit_ridge_grid <- cv.glmnet(data.matrix(X_train[,-ncol(X_train)]), data.matrix(y_train), family= 'multinomial', type.measure = 'class', nfolds = 5, alpha = 0, lambda = grid)
+plot(cv_fit_ridge_grid)
+```
+
+Now the minimum is quite far from the boundary and let's compare the lambdas we obtained with these two grids. 
+
+
+```{r}
+set.seed(123)
+plot(cv_fit_ridge_grid)
+
+lambda_ridge_default <- cv_fit_ridge$lambda.min
+i <- which(cv_fit_ridge$lambda == cv_fit_ridge$lambda.min)
+mse_min_default <- cv_fit_ridge$cvm[i]
+j <- which(cv_fit_ridge_grid$lambda == cv_fit_ridge_grid$lambda.min)
+mse_min_grid <- cv_fit_ridge_grid$cvm[j]
+lambda_ridge_grid <- cv_fit_ridge_grid$lambda.min
+abline(h=mse_min_default, v=log(lambda_ridge_default),col= 'blue', lty=2)  # selected by default lambda
+abline(h=mse_min_grid, v=log(lambda_ridge_grid),col= 'green', lty=2)  # selected by defined grid of lambda
+legend(17, 185, legend=c("default", "search_grid"),
+       col=c("blue", "green"), lty=1:2, cex=0.8)
+```
+The point indicated by the blue line is the minimum point selected by default grid while the point indicated by the green line is the minimum point selected by defined grid, indeed the error keeps decreasing for awhile which means we get a better lambda value. 
+
+
+```{r}
+cat('The selected lambda corresponding to the minimum error is: \n', cv_fit_ridge_grid$lambda.min)
+cat('\n\n')
+cat('The selected lambda corresponding to the 1se is: \n', cv_fit_ridge_grid$lambda.1se)
+```
+
+
+```{r}
+temp <- coef(cv_fit_ridge_grid, s = cv_fit_ridge_grid$lambda.min)
+beta <- Reduce(cbind, temp)
+beta <- beta[apply(beta != 0, 1, any),]
+colnames(beta) <- names(temp)
+beta
+```
+
+```{r}
+set.seed(123)
+
+# Make predictions on the test set 
+pred_ridge = predict(cv_fit_ridge_grid, newx= data.matrix(X_test[,-ncol(X_test)]), type='class')
+
+# Accuracy
+mean(pred_ridge == data.matrix(y_test))
+```
+
+We can see that now the accuracy is over 0.94 which is slightly better than LASSO and the most relevant features are those with coefficients appear to be high in magnitude in terms of the absolute values, for example: V2 tBodyAcc-mean()-Y and V191 tBodyGyroJerk-arCoeff()-Y,2.  Furthermore, we can get the confusion matrix: \\
+
+```{r}
+table(data.matrix(y_test),pred_ridge)
+```
+
+## Elastic-net
+
+LASSO uses L1 penalty to force sparsity and Ridge Regression uses L2 penalty to force the coefficients to be close to zero, the Elastic-net takes into both types of penalty which hopes to obtain an intermediate solution.  \\
+
+Before fitting the model with Elastic-net, first we have to fix the amount of alpha we want to use, hence, we will use a search grid between 0 and 10 with a total of 10 different points to find the best alpha.  \\
+
+```{r}
+set.seed(123)
+alpha_grid = seq(0, 1,length=10) 
+cv_alpha <- lapply(alpha_grid, function(a){
+  cv.glmnet(data.matrix(X_train[,-ncol(X_train)]), data.matrix(y_train), nfold=3,  alpha=a, family= 'multinomial', type.measure = 'class')
+})
+```
+
+
+
+```{r}
+min_loss <- c()
+for (i in 1:10) {
+  min_loss <- append(min_loss, i)
+}
+alpha <- min_loss[which.min(min_loss)]
+alpha
+```
+
+The best alpha we found is 1 which means the LASSO regression, thus we don't need to proceed the following steps as if we use the exact same parameter as with LASSO, the Elastic-net and LASSO will give us exactly the same result.  \\
+
+
+
+# Conclusion
+
+Within this project, we tried two different types of representations of dataset and with each representation we used four different methods check the performance. Overall, we can see that the representation with the removal of highly co-related features appear to be better than PCA except the case that we use LDA. With the former representation, all of our models performs well and almost all of them can reach an accuracy of around 0.90, and we can see that there is a sort of separability between different activity blocks, namely: WALKING and NON-WALKING blocks. The prediction errors primarily stay within their own block which indicates that it is easy to separate them. Sometimes the models experience some minor difficulties labeling correctly the within the blocks, such as mis-classifying 'SITTING' as 'STANDING' and 'WALKING_DOWNSTAIRS' as 'WALKING'.  With PCA, only LDA is able to outperform the models with the other representation and in fact PCA with LDA achieved the highest accuracy among all the possible combinations of the representations and models. Even though it still suffers from the difficulty of correctly classifying within the NON-WALKING block, it can actually classify the WALKING block much better, hence, if our objective focus more on the correctness of the NON-WALKING block, then transforming the dataset with PCA first and then apply LDA appears to be the best option. On the other hand, if we focus more on the separability between different activity blocks, then removing the highly correlated features before fitting the models is highly recommended as all after the feature removal all the models can separate the different blocks.   \\
+
+As for the second part of the project, we applied different regularization approaches and hope to find a way to guarantee a better generalization of our models. Since all of the techniques used are model dependent thus we fixed the logistic regression.  Furthermore, three different approaches have been tested, and all of them actually improve in accuracy which might indicate that without regularization, the model actually overfits the data.  All three techniques performed well, LASSO and Elastic-net turned out to be equivalent for this specific problem as after the cross-validation, the best alpha value for the Elastic-net appears to be equals to 1 which indicates a LASSO regularization. With LASSO, not only the accuracy of improved but also the number of parameters needed has dropped significantly. And finally, the ridge also provide really good result but slightly worse than LASSO and Elastic-net, considering the feature selection ability provided by LASSO, Ridge Regression is not really the best option from the computation and storage point of view as it cannot shrink the parameters to zero.   \\  
+
+
+```{r}
+rm(list = ls())
+```
+
